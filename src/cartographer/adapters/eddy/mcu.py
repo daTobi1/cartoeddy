@@ -26,6 +26,11 @@ logger = logging.getLogger(__name__)
 
 SENSOR_READY_TIMEOUT = 5.0
 
+# Supported tap detection modes for eddy-ng
+TAP_MODE_WMA = "wma"
+TAP_MODE_SOS = "sos"
+VALID_TAP_MODES = {TAP_MODE_WMA, TAP_MODE_SOS}
+
 
 @final
 class EddyMcu(Mcu, KlipperStreamMcu):
@@ -42,10 +47,16 @@ class EddyMcu(Mcu, KlipperStreamMcu):
         config: ConfigWrapper,
         scheduler: Scheduler,
         sensor: object,
+        tap_mode: str = TAP_MODE_WMA,
     ):
+        if tap_mode not in VALID_TAP_MODES:
+            msg = f"Invalid tap_mode '{tap_mode}'. Must be one of: {', '.join(sorted(VALID_TAP_MODES))}"
+            raise ValueError(msg)
+
         self.printer = config.get_printer()
         self._sensor = sensor
         self._scheduler = scheduler
+        self._tap_mode = tap_mode
 
         # The underlying Klipper MCU object — needed by KlipperEndstop.get_mcu()
         self.klipper_mcu = sensor.get_mcu()
@@ -64,6 +75,11 @@ class EddyMcu(Mcu, KlipperStreamMcu):
 
         self.printer.register_event_handler("klippy:mcu_identify", self._handle_mcu_identify)
         self.printer.register_event_handler("klippy:connect", self._handle_connect)
+
+    @property
+    def tap_mode(self) -> str:
+        """The active tap detection mode ('wma' or 'sos')."""
+        return self._tap_mode
 
     @cached_property
     def kinematics(self):
@@ -100,12 +116,18 @@ class EddyMcu(Mcu, KlipperStreamMcu):
 
         completion = self.dispatch.start(print_time)
 
-        # For touch mode we use eddy-ng's WMA tap mode.
-        # The threshold is passed as a float — eddy-ng internally converts to
-        # fixed-point via int(tap_threshold * 65536.0).
-        # The trigger/start freqs are not used in WMA tap mode,
-        # but eddy-ng still expects them. We use 0 as placeholders since
-        # the tap threshold is what actually triggers.
+        # eddy-ng supports two tap detection modes:
+        #   "wma" — Weighted Moving Average of frequency derivative (fast, integer math)
+        #   "sos" — Butterworth bandpass filter via cascaded second-order sections (cleaner signal)
+        #
+        # Both modes share the same setup_home() interface. The threshold is passed
+        # as a float — eddy-ng internally converts via int(tap_threshold * 65536.0).
+        # The MCU side then interprets it mode-specifically:
+        #   WMA: tap_threshold >> 16 (cumulative derivative change)
+        #   SOS: tap_threshold / 65536.0f (filtered signal magnitude)
+        #
+        # The trigger/start freqs are not used in tap modes,
+        # but eddy-ng still expects them. We use 0 as placeholders.
         self._sensor.setup_home(
             trsync_oid=self.dispatch.get_oid(),
             hit_reason=MCU_trsync.REASON_ENDSTOP_HIT,
@@ -113,7 +135,7 @@ class EddyMcu(Mcu, KlipperStreamMcu):
             trigger_freq=0.0,
             start_freq=0.0,
             start_time=0,
-            mode="wma",
+            mode=self._tap_mode,
             tap_threshold=float(threshold),
         )
         return completion
@@ -171,6 +193,7 @@ class EddyMcu(Mcu, KlipperStreamMcu):
             if last
             else None,
             "sensor_type": "eddy",
+            "tap_mode": self._tap_mode,
         }
 
     @override

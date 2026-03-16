@@ -7,7 +7,7 @@ Cartographer3D Eddy Probe Integration — Use BTT Eddy (and compatible LDC1612-b
 CartoEddy bridges the [eddy-ng](https://github.com/daTobi1/eddy-ng) sensor driver (`LDC1612_ng`) into Cartographer's adapter architecture. Instead of replacing Cartographer's core logic, it implements Cartographer's `Mcu` protocol for the Eddy sensor. This means all of Cartographer's features work out of the box:
 
 - **Scan mode homing** (frequency-threshold based Z homing)
-- **Touch mode homing** (WMA tap detection)
+- **Touch mode homing** (WMA or Butterworth tap detection)
 - **Scan calibration** (`CARTOGRAPHER_SCAN_CALIBRATE`)
 - **Touch calibration** (`CARTOGRAPHER_TOUCH_CALIBRATE`)
 - **Bed mesh** (`BED_MESH_CALIBRATE` — rapid scan mesh)
@@ -128,6 +128,11 @@ z_backlash: 0.05              # Z backlash compensation (mm)
 verbose: False                # Enable debug logging
 # macro_prefix: EDDY          # Optional: creates aliased macro set (e.g., EDDY_SCAN_CALIBRATE)
 
+# === Tap Detection Mode ===
+# tap_mode: wma               # Options: wma (default), sos/butterworth
+                              # wma = Weighted Moving Average (fast, lightweight)
+                              # sos = Butterworth bandpass filter (cleaner signal, more filtering)
+
 # === Scan Mode ===
 [cartographer_eddy scan]
 samples: 20                   # Number of samples per probe point
@@ -186,12 +191,38 @@ If you want to use touch-based Z homing (more accurate than scan):
 CARTOGRAPHER_TOUCH_CALIBRATE
 ```
 
-This finds the optimal touch threshold for your setup. The default uses WMA (Weighted Moving Average) tap detection, which works well for most Eddy probes.
+This automatically finds the optimal touch threshold for your setup by iterating from a start value upwards until it finds a threshold that produces consistent, repeatable results.
 
-**Touch threshold guidance:**
-- WMA mode values typically range from 500 to 2000
-- Start with the auto-calibrated value
-- Higher = less sensitive (may miss contact), Lower = more sensitive (may false trigger)
+**How auto-calibration works:**
+1. **Screening phase** — collects a few samples at the current threshold, checks if a consistent subset exists
+2. **Verification phase** — runs multiple full touch probe sequences to confirm reliability
+3. **Increment** — if the threshold fails, it's increased (10-20% steps) and retried
+4. Stops at the **minimum threshold that passes both phases**
+
+**Tap mode selection** (`tap_mode` in config):
+
+| Mode | Config Value | Default Threshold Range | Characteristics |
+|------|-------------|------------------------|-----------------|
+| **WMA** | `wma` (default) | 500 - 2000 | Fast, lightweight integer math. Tracks weighted average of frequency derivative. Good general-purpose choice. |
+| **Butterworth** | `sos` or `butterworth` | 100 - 500 | IIR bandpass filter (5-25 Hz). Cleaner signal, better noise rejection. Slightly more MCU load and phase lag. |
+
+**Calibration parameters:**
+```
+# Use defaults (START=500, MAX=5000):
+CARTOGRAPHER_TOUCH_CALIBRATE
+
+# For Butterworth mode, start lower:
+CARTOGRAPHER_TOUCH_CALIBRATE START=100 MAX=2000
+
+# Customize verification:
+CARTOGRAPHER_TOUCH_CALIBRATE SPEED=2 VERIFICATION_SAMPLES=10
+```
+
+**Threshold guidance:**
+- The auto-calibration finds the optimal value — use it as-is
+- Lower = more sensitive (may false trigger), Higher = less sensitive (may miss contact)
+- WMA thresholds are typically higher than Butterworth thresholds
+- If calibration fails, try the other `tap_mode` or check mechanical setup
 
 ### 3. Verify Accuracy
 
@@ -268,7 +299,7 @@ All standard Cartographer commands work:
 | Connection | USB/CAN (dedicated MCU) | I2C/SPI via printer MCU |
 | Temperature sensor | On-board coil temp | None (disabled) |
 | Temperature compensation | Yes | No (not needed for most setups) |
-| Touch detection | Custom firmware | eddy-ng WMA mode |
+| Touch detection | Custom firmware | eddy-ng WMA or Butterworth mode |
 | Scan mode | Native | Via eddy-ng frequency conversion |
 | All macros | Yes | Yes (except temp calibrate) |
 
@@ -293,9 +324,11 @@ The MCU lost synchronization during a homing move. This can happen if:
 - There's electrical noise on the I2C/SPI bus
 
 ### Touch mode gives inconsistent results
+- Try switching `tap_mode` between `wma` and `sos` (Butterworth may work better for noisy setups)
 - Try adjusting `sample_range` (default 0.010mm)
 - Increase `retract_distance` if samples are too close
 - Re-run `CARTOGRAPHER_TOUCH_CALIBRATE` to find optimal threshold
+- For Butterworth mode, use lower START value: `CARTOGRAPHER_TOUCH_CALIBRATE START=100`
 
 ## Uninstall
 

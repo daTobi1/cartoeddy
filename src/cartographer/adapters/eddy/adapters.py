@@ -4,7 +4,7 @@ import logging
 from typing import TYPE_CHECKING, final
 
 from cartographer.adapters.eddy.configuration import EddyConfiguration
-from cartographer.adapters.eddy.mcu import EddyMcu
+from cartographer.adapters.eddy.mcu import TAP_MODE_SOS, TAP_MODE_WMA, EddyMcu
 from cartographer.adapters.eddy.toolhead import EddyToolhead
 from cartographer.adapters.klipper.bed_mesh import KlipperBedMesh
 from cartographer.adapters.klipper.gcode import KlipperGCodeDispatch
@@ -16,6 +16,9 @@ if TYPE_CHECKING:
     from configfile import ConfigWrapper as KlipperConfigWrapper
 
 logger = logging.getLogger(__name__)
+
+
+TAP_MODE_CHOICES = {"wma": TAP_MODE_WMA, "sos": TAP_MODE_SOS, "butterworth": TAP_MODE_SOS}
 
 
 def _parse_eddy_general_config(config: object) -> GeneralConfig:
@@ -45,7 +48,8 @@ class EddyAdapters(Adapters):
         self.scheduler = KlipperScheduler(self.printer.get_reactor())
 
         general = _parse_eddy_general_config(config)
-        self.mcu = EddyMcu(config, self.scheduler, sensor)
+        tap_mode = config.getchoice("tap_mode", TAP_MODE_CHOICES, TAP_MODE_WMA)
+        self.mcu = EddyMcu(config, self.scheduler, sensor, tap_mode=tap_mode)
         self.config = EddyConfiguration(config, self.mcu, general)
 
         self.toolhead = EddyToolhead(config, self.mcu)
