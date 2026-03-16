@@ -18,10 +18,9 @@ CartoEddy bridges the [eddy-ng](https://github.com/daTobi1/eddy-ng) sensor drive
 ## Prerequisites
 
 1. **Klipper** (or Kalico) installed and running
-2. **eddy-ng** installed — `ldc1612_ng.py` must be in `klippy/extras/`
+2. **eddy-ng** repository cloned (the install script handles file copying)
    ```bash
-   cd ~/eddy-ng
-   python install.py
+   git clone https://github.com/daTobi1/eddy-ng.git ~/eddy-ng
    ```
 3. **cartographer3d-plugin** installed
    ```bash
@@ -31,47 +30,25 @@ CartoEddy bridges the [eddy-ng](https://github.com/daTobi1/eddy-ng) sensor drive
 
 ## Installation
 
-### Automatic (recommended)
-
 ```bash
 git clone https://github.com/daTobi1/cartoeddy.git ~/cartoeddy
-```
-
-Then apply the code changes and create the scaffolding file:
-
-```bash
 cd ~/cartoeddy
 ./scripts/install_eddy.sh
 ```
 
 The install script:
-- Verifies that eddy-ng and cartographer3d-plugin are already installed
-- Creates `cartographer_eddy.py` in `klippy/extras/` (or `klippy/plugins/` for Kalico)
-- Adds the file to git exclude so it doesn't show up in Klipper's git status
+- Installs eddy-ng Python files **without patching Klipper** (no dirty repo)
+- Copies CartoEddy adapter files into the cartographer package
+- Creates `cartographer_eddy.py` scaffolding in `klippy/extras/`
+- Reverts any old eddy-ng patches if present
+- Adds all new files to `.git/info/exclude`
 
-### Manual
-
-1. Copy the eddy adapter files into the installed cartographer package:
-   ```bash
-   SITE_PACKAGES=$(~/klippy-env/bin/python -c "import cartographer; import os; print(os.path.dirname(cartographer.__file__))")
-
-   # Copy adapter files
-   cp -r src/cartographer/adapters/eddy "$SITE_PACKAGES/adapters/eddy"
-
-   # Copy entry point
-   cp src/cartographer/extra_eddy.py "$SITE_PACKAGES/extra_eddy.py"
-
-   # Copy modified runtime files
-   cp src/cartographer/runtime/loader.py "$SITE_PACKAGES/runtime/loader.py"
-   cp src/cartographer/runtime/environment.py "$SITE_PACKAGES/runtime/environment.py"
-   ```
-
-2. Create the Klipper scaffolding file:
-   ```bash
-   echo 'from cartographer.extra_eddy import *' > ~/klipper/klippy/extras/cartographer_eddy.py
-   ```
-
-3. Restart Klipper.
+**First-time firmware build** (needed once for the eddy-ng MCU driver):
+```bash
+cd ~/cartoeddy
+./scripts/update.sh --flash --skip-klipper --skip-cartographer --skip-cartoeddy
+```
+This temporarily patches `src/Makefile`, builds & flashes firmware, then reverts the patch.
 
 ## Configuration
 
@@ -312,9 +289,9 @@ The sensor couldn't get a valid reading within 5 seconds of a homing attempt. Ch
 - That the sensor is close enough to a metallic surface
 
 ### "Could not import ldc1612_ng"
-eddy-ng is not installed. Install it first:
+eddy-ng Python files are not installed. Re-run the installer:
 ```bash
-cd ~/eddy-ng && python install.py
+cd ~/cartoeddy && ./scripts/install_eddy.sh
 ```
 
 ### "Communication timeout during homing"
@@ -332,43 +309,46 @@ The MCU lost synchronization during a homing move. This can happen if:
 
 ## Updating
 
-CartoEddy includes a full-stack update script that handles the complete update chain cleanly — including Klipper's patched files, so Moonraker won't report a dirty repo.
+CartoEddy includes a full-stack update script that keeps the Klipper repo **100% clean** — no dirty-repo warnings in Moonraker, and Klipper updates show up normally.
 
 ```bash
 cd ~/cartoeddy
 ./scripts/update.sh
 ```
 
+**How it stays clean:**
+- eddy-ng's `bed_mesh.py` patch is **not needed** (Cartographer has its own bed mesh)
+- eddy-ng's `Makefile` patch is **only applied temporarily** during firmware builds
+- Python files (`ldc1612_ng.py`) and firmware (`sensor_ldc1612_ng.c`) are added as **untracked files** hidden via `.git/info/exclude`
+- No `assume-unchanged` hacks needed
+
 **What it does:**
-1. Lifts `assume-unchanged` flags on eddy-ng's patched Klipper files
-2. Reverts patches (`bed_mesh.py`, `Makefile`) to upstream state
-3. Pulls Klipper updates (`git pull --ff-only`)
-4. Pulls & re-installs eddy-ng (re-patches Klipper)
-5. Pulls & re-installs Cartographer (pip upgrade)
-6. Pulls & re-installs CartoEddy (copies adapter files)
-7. Marks patched files as `assume-unchanged` (hides from git status)
-8. Restarts Klipper service
+1. Cleans up any old eddy-ng patches (from previous `install.py` runs)
+2. Pulls Klipper updates (`git pull --ff-only`)
+3. Pulls & re-installs eddy-ng (Python files only, no patches)
+4. Pulls & re-installs Cartographer (pip upgrade)
+5. Pulls & re-installs CartoEddy (copies adapter files)
+6. Verifies Klipper repo is clean
+7. Restarts Klipper service
 
 **Options:**
 ```bash
-# Skip specific components
-./scripts/update.sh --skip-klipper       # Don't update Klipper itself
-./scripts/update.sh --skip-eddy-ng       # Don't update eddy-ng
-./scripts/update.sh --skip-restart       # Don't restart Klipper after update
+# Standard update:
+./scripts/update.sh
 
-# Custom paths
+# Also rebuild & flash firmware (Makefile patched temporarily):
+./scripts/update.sh --flash
+
+# Skip specific components:
+./scripts/update.sh --skip-klipper
+./scripts/update.sh --skip-eddy-ng
+./scripts/update.sh --skip-restart
+
+# Custom paths:
 ./scripts/update.sh -k ~/klipper -e ~/klippy-env --eddy-ng ~/eddy-ng
-
-# Don't hide patched files (if you don't mind the dirty-repo warning)
-./scripts/update.sh --no-assume-unchanged
 ```
 
-**Firmware note:** If eddy-ng MCU firmware was updated, you also need to rebuild and flash:
-```bash
-cd ~/klipper
-make menuconfig   # Ensure WANT_EDDY_NG is selected
-make flash
-```
+**Firmware builds:** The `--flash` flag temporarily patches `src/Makefile` to include `sensor_ldc1612_ng.c`, runs `make && make flash`, then immediately reverts the patch. The repo stays clean.
 
 ## Uninstall
 

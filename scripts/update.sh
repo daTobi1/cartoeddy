@@ -6,17 +6,16 @@ set -euo pipefail
 # CartoEddy Full Update Script
 #
 # Automates the complete update of Klipper + eddy-ng + Cartographer +
-# CartoEddy without leaving dirty-repo warnings.
+# CartoEddy WITHOUT leaving a dirty Klipper repo.
 #
-# What it does:
-#   1. Removes eddy-ng patches from Klipper (bed_mesh.py, Makefile)
-#   2. Lifts any assume-unchanged flags
-#   3. Updates Klipper via git pull
-#   4. Updates eddy-ng via git pull + re-installs (re-patches Klipper)
-#   5. Updates Cartographer via git pull + re-installs (pip upgrade)
-#   6. Updates CartoEddy via git pull + re-installs (copies adapter files)
-#   7. Marks patched files as assume-unchanged (hides from git status)
-#   8. Restarts Klipper
+# Key insight: CartoEddy does NOT need eddy-ng's bed_mesh.py patch
+# (Cartographer has its own BED_MESH_CALIBRATE implementation).
+# The Makefile patch is only needed during firmware compilation.
+#
+# Strategy:
+#   - Install eddy-ng Python files directly (no patches)
+#   - Keep Klipper repo 100% clean
+#   - Provide --flash option for firmware rebuilds (temp-patches Makefile)
 # =========================================================================
 
 DEFAULT_KLIPPER_DIR="$HOME/klipper"
@@ -25,24 +24,26 @@ DEFAULT_EDDY_NG_DIR="$HOME/eddy-ng"
 DEFAULT_CARTOGRAPHER_DIR="$HOME/cartographer3d-plugin"
 DEFAULT_CARTOEDDY_DIR="$HOME/cartoeddy"
 
-# Files that eddy-ng patches in the Klipper repo
-PATCHED_FILES=(
-  "klippy/extras/bed_mesh.py"
-  "src/Makefile"
+# eddy-ng Python files to copy into klippy/extras/
+EDDY_NG_PYTHON_FILES=(
+  "ldc1612_ng.py"
 )
 
-# Colors for output
+# eddy-ng firmware file
+EDDY_NG_FIRMWARE_FILE="eddy-ng/sensor_ldc1612_ng.c"
+
+# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 function display_help() {
   echo "Usage: $0 [OPTIONS]"
   echo ""
   echo "Fully automated update of Klipper + eddy-ng + Cartographer + CartoEddy."
-  echo "Handles patched files cleanly so Klipper/Moonraker won't report a dirty repo."
+  echo "Keeps the Klipper repo clean — no dirty-repo warnings in Moonraker."
   echo ""
   echo "Options:"
   echo "  -k, --klipper           Klipper directory (default: $DEFAULT_KLIPPER_DIR)"
@@ -50,13 +51,17 @@ function display_help() {
   echo "  --eddy-ng               eddy-ng directory (default: $DEFAULT_EDDY_NG_DIR)"
   echo "  --cartographer          cartographer3d-plugin directory (default: $DEFAULT_CARTOGRAPHER_DIR)"
   echo "  --cartoeddy             cartoeddy directory (default: $DEFAULT_CARTOEDDY_DIR)"
+  echo "  --flash                 Also rebuild & flash MCU firmware (applies Makefile patch temporarily)"
   echo "  --skip-klipper          Skip Klipper git pull"
   echo "  --skip-eddy-ng          Skip eddy-ng update"
   echo "  --skip-cartographer     Skip Cartographer update"
   echo "  --skip-cartoeddy        Skip CartoEddy update"
   echo "  --skip-restart          Skip Klipper service restart"
-  echo "  --no-assume-unchanged   Don't set assume-unchanged on patched files"
   echo "  --help                  Show this help message"
+  echo ""
+  echo "Firmware note:"
+  echo "  The Makefile patch for sensor_ldc1612_ng.c is only applied during --flash"
+  echo "  and reverted immediately after. The Klipper repo stays clean at all times."
   echo ""
   exit 0
 }
@@ -83,7 +88,7 @@ function parse_args() {
   skip_cartographer=false
   skip_cartoeddy=false
   skip_restart=false
-  do_assume_unchanged=true
+  do_flash=false
 
   while [[ "$#" -gt 0 ]]; do
     case "$1" in
@@ -92,12 +97,12 @@ function parse_args() {
     --eddy-ng)              eddy_ng_dir="$2";       shift 2 ;;
     --cartographer)         cartographer_dir="$2";  shift 2 ;;
     --cartoeddy)            cartoeddy_dir="$2";     shift 2 ;;
+    --flash)                do_flash=true;           shift ;;
     --skip-klipper)         skip_klipper=true;      shift ;;
     --skip-eddy-ng)         skip_eddy_ng=true;      shift ;;
     --skip-cartographer)    skip_cartographer=true;  shift ;;
     --skip-cartoeddy)       skip_cartoeddy=true;    shift ;;
     --skip-restart)         skip_restart=true;       shift ;;
-    --no-assume-unchanged)  do_assume_unchanged=false; shift ;;
     --help) display_help ;;
     *)
       echo "Unknown option: $1"
@@ -118,46 +123,31 @@ function check_dir() {
 }
 
 # ──────────────────────────────────────────────────────────────
-# Step 1: Lift assume-unchanged and unpatch Klipper
+# Clean up: Undo any leftover eddy-ng patches from old installs
 # ──────────────────────────────────────────────────────────────
 
-function lift_assume_unchanged() {
-  log_step "Lifting assume-unchanged flags on patched files"
+function clean_old_patches() {
+  log_step "Cleaning old eddy-ng patches (if any)"
   cd "$klipper_dir"
 
-  for f in "${PATCHED_FILES[@]}"; do
-    if [ -f "$f" ]; then
-      git update-index --no-assume-unchanged "$f" 2>/dev/null || true
-      log_ok "$f"
-    fi
-  done
-}
+  local old_patched_files=("klippy/extras/bed_mesh.py" "src/Makefile")
 
-function unpatch_klipper() {
-  log_step "Reverting eddy-ng patches in Klipper"
-  cd "$klipper_dir"
+  for f in "${old_patched_files[@]}"; do
+    # Lift assume-unchanged if set
+    git update-index --no-assume-unchanged "$f" 2>/dev/null || true
 
-  # Check if files are actually modified before trying to restore
-  local dirty_files
-  dirty_files=$(git diff --name-only "${PATCHED_FILES[@]}" 2>/dev/null || true)
-
-  if [ -z "$dirty_files" ]; then
-    log_ok "No patches to revert (files are clean)"
-    return
-  fi
-
-  for f in "${PATCHED_FILES[@]}"; do
-    if git diff --quiet "$f" 2>/dev/null; then
-      log_ok "$f (already clean)"
-    else
+    # Revert if modified
+    if ! git diff --quiet "$f" 2>/dev/null; then
       git checkout -- "$f"
-      log_ok "Restored $f to upstream version"
+      log_ok "Reverted old patch: $f"
     fi
   done
+
+  log_ok "Klipper repo is clean"
 }
 
 # ──────────────────────────────────────────────────────────────
-# Step 2: Update Klipper
+# Update Klipper
 # ──────────────────────────────────────────────────────────────
 
 function update_klipper() {
@@ -185,7 +175,7 @@ function update_klipper() {
 }
 
 # ──────────────────────────────────────────────────────────────
-# Step 3: Update & re-install eddy-ng
+# Update & install eddy-ng (Python files only — no Klipper patches)
 # ──────────────────────────────────────────────────────────────
 
 function update_eddy_ng() {
@@ -216,13 +206,58 @@ function update_eddy_ng() {
     log_ok "Updated $before → $after"
   fi
 
-  log_step "Re-installing eddy-ng into Klipper"
-  python3 install.py "$klipper_dir" --copy 2>&1 | while IFS= read -r line; do echo "  $line"; done
-  log_ok "eddy-ng installed (files copied + Klipper patched)"
+  log_step "Installing eddy-ng Python files (no Klipper patches)"
+
+  # Determine target directory
+  local extras_dir
+  if [ -d "$klipper_dir/klippy/plugins" ]; then
+    extras_dir="$klipper_dir/klippy/plugins"
+  else
+    extras_dir="$klipper_dir/klippy/extras"
+  fi
+
+  # Copy Python driver files
+  for f in "${EDDY_NG_PYTHON_FILES[@]}"; do
+    local src="$eddy_ng_dir/$f"
+    local dest="$extras_dir/$(basename "$f")"
+    if [ -f "$src" ]; then
+      cp "$src" "$dest"
+      log_ok "Copied $f → $extras_dir/"
+    else
+      log_error "Source file not found: $src"
+    fi
+  done
+
+  # Copy firmware C file (needed for --flash, doesn't dirty the repo)
+  local fw_src="$eddy_ng_dir/$EDDY_NG_FIRMWARE_FILE"
+  local fw_dest="$klipper_dir/src/$(basename "$EDDY_NG_FIRMWARE_FILE")"
+  if [ -f "$fw_src" ]; then
+    cp "$fw_src" "$fw_dest"
+    log_ok "Copied $(basename "$EDDY_NG_FIRMWARE_FILE") → src/"
+
+    # Add to git exclude so it doesn't show as untracked
+    local exclude_file="$klipper_dir/.git/info/exclude"
+    local fw_rel="src/$(basename "$EDDY_NG_FIRMWARE_FILE")"
+    if [ -d "$klipper_dir/.git" ] && ! grep -qF "$fw_rel" "$exclude_file" 2>/dev/null; then
+      echo "$fw_rel" >>"$exclude_file"
+      log_ok "Added $fw_rel to git exclude"
+    fi
+  fi
+
+  # Add Python files to git exclude
+  for f in "${EDDY_NG_PYTHON_FILES[@]}"; do
+    local rel_path="${extras_dir#"$klipper_dir"/}/$(basename "$f")"
+    local exclude_file="$klipper_dir/.git/info/exclude"
+    if [ -d "$klipper_dir/.git" ] && ! grep -qF "$rel_path" "$exclude_file" 2>/dev/null; then
+      echo "$rel_path" >>"$exclude_file"
+    fi
+  done
+
+  log_ok "eddy-ng installed (Python files only, no Klipper patches)"
 }
 
 # ──────────────────────────────────────────────────────────────
-# Step 4: Update & re-install Cartographer
+# Update & re-install Cartographer
 # ──────────────────────────────────────────────────────────────
 
 function update_cartographer() {
@@ -259,7 +294,7 @@ function update_cartographer() {
 }
 
 # ──────────────────────────────────────────────────────────────
-# Step 5: Update & re-install CartoEddy
+# Update & re-install CartoEddy
 # ──────────────────────────────────────────────────────────────
 
 function update_cartoeddy() {
@@ -296,30 +331,46 @@ function update_cartoeddy() {
 }
 
 # ──────────────────────────────────────────────────────────────
-# Step 6: Hide patched files from git status
+# Flash firmware (optional, temp-patches Makefile)
 # ──────────────────────────────────────────────────────────────
 
-function set_assume_unchanged() {
-  if [ "$do_assume_unchanged" = false ]; then
-    log_step "Skipping assume-unchanged (--no-assume-unchanged)"
+function flash_firmware() {
+  if [ "$do_flash" = false ]; then
     return
   fi
 
-  log_step "Hiding patched files from git status (assume-unchanged)"
+  log_step "Building & flashing firmware with eddy-ng support"
   cd "$klipper_dir"
 
-  for f in "${PATCHED_FILES[@]}"; do
-    if [ -f "$f" ]; then
-      git update-index --assume-unchanged "$f"
-      log_ok "$f"
-    fi
-  done
+  local makefile="src/Makefile"
 
-  log_ok "Moonraker will no longer report a dirty Klipper repo"
+  # Check if Makefile already has sensor_ldc1612_ng.c (from a previous partial run)
+  if grep -q "sensor_ldc1612_ng.c" "$makefile"; then
+    log_ok "Makefile already has sensor_ldc1612_ng.c"
+  else
+    # Temporarily patch Makefile to include eddy-ng firmware
+    sed -i 's,sensor_ldc1612.c$,sensor_ldc1612.c sensor_ldc1612_ng.c,' "$makefile"
+    log_ok "Temporarily patched Makefile for firmware build"
+  fi
+
+  # Build firmware
+  echo ""
+  echo -e "  ${YELLOW}Running make — this may take a moment...${NC}"
+  make 2>&1 | while IFS= read -r line; do echo "  $line"; done
+
+  # Flash firmware
+  echo ""
+  echo -e "  ${YELLOW}Flashing firmware...${NC}"
+  make flash 2>&1 | while IFS= read -r line; do echo "  $line"; done
+  log_ok "Firmware built and flashed"
+
+  # Revert Makefile patch
+  git checkout -- "$makefile"
+  log_ok "Reverted temporary Makefile patch (repo stays clean)"
 }
 
 # ──────────────────────────────────────────────────────────────
-# Step 7: Restart Klipper
+# Restart Klipper
 # ──────────────────────────────────────────────────────────────
 
 function restart_klipper() {
@@ -338,6 +389,27 @@ function restart_klipper() {
     log_ok "Klipper restarted via service"
   else
     log_warn "Could not find systemctl or service. Please restart Klipper manually."
+  fi
+}
+
+# ──────────────────────────────────────────────────────────────
+# Verify clean repo
+# ──────────────────────────────────────────────────────────────
+
+function verify_clean_repo() {
+  log_step "Verifying Klipper repo status"
+  cd "$klipper_dir"
+
+  local dirty
+  dirty=$(git status --porcelain 2>/dev/null || true)
+
+  if [ -z "$dirty" ]; then
+    log_ok "Klipper repo is clean — no dirty-repo warnings"
+  else
+    log_warn "Klipper repo still has changes:"
+    echo "$dirty" | while IFS= read -r line; do echo "    $line"; done
+    echo ""
+    log_warn "These may be untracked files not in .git/info/exclude"
   fi
 }
 
@@ -364,16 +436,17 @@ function main() {
   echo "  eddy-ng:      $eddy_ng_dir"
   echo "  Cartographer: $cartographer_dir"
   echo "  CartoEddy:    $cartoeddy_dir"
+  if [ "$do_flash" = true ]; then
+    echo "  Firmware:     will rebuild & flash"
+  fi
   echo ""
 
-  # Validate that at least Klipper exists
   if ! check_dir "Klipper" "$klipper_dir"; then
     exit 1
   fi
 
-  # Phase 1: Clean up patched state
-  lift_assume_unchanged
-  unpatch_klipper
+  # Phase 1: Clean up any old eddy-ng patches
+  clean_old_patches
 
   # Phase 2: Pull updates
   update_klipper
@@ -381,21 +454,21 @@ function main() {
   update_cartographer
   update_cartoeddy
 
-  # Phase 3: Hide patches from git
-  set_assume_unchanged
+  # Phase 3: Firmware (optional)
+  flash_firmware
 
-  # Phase 4: Restart
+  # Phase 4: Verify & restart
+  verify_clean_repo
   restart_klipper
 
   echo ""
   echo -e "${GREEN}━━━ Update complete!${NC}"
   echo ""
-  echo "  Note: If eddy-ng MCU firmware was updated, you may also need to"
-  echo "  rebuild and flash the firmware:"
-  echo "    cd $klipper_dir"
-  echo "    make menuconfig   # Ensure WANT_EDDY_NG is selected"
-  echo "    make flash"
-  echo ""
+  if [ "$do_flash" = false ]; then
+    echo "  Tip: If eddy-ng firmware was updated, re-run with --flash:"
+    echo "    $0 --flash --skip-klipper --skip-cartographer --skip-cartoeddy"
+    echo ""
+  fi
 }
 
 main "$@"
