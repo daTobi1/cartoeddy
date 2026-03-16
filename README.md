@@ -330,6 +330,46 @@ The MCU lost synchronization during a homing move. This can happen if:
 - Re-run `CARTOGRAPHER_TOUCH_CALIBRATE` to find optimal threshold
 - For Butterworth mode, use lower START value: `CARTOGRAPHER_TOUCH_CALIBRATE START=100`
 
+## Updating
+
+CartoEddy includes a full-stack update script that handles the complete update chain cleanly — including Klipper's patched files, so Moonraker won't report a dirty repo.
+
+```bash
+cd ~/cartoeddy
+./scripts/update.sh
+```
+
+**What it does:**
+1. Lifts `assume-unchanged` flags on eddy-ng's patched Klipper files
+2. Reverts patches (`bed_mesh.py`, `Makefile`) to upstream state
+3. Pulls Klipper updates (`git pull --ff-only`)
+4. Pulls & re-installs eddy-ng (re-patches Klipper)
+5. Pulls & re-installs Cartographer (pip upgrade)
+6. Pulls & re-installs CartoEddy (copies adapter files)
+7. Marks patched files as `assume-unchanged` (hides from git status)
+8. Restarts Klipper service
+
+**Options:**
+```bash
+# Skip specific components
+./scripts/update.sh --skip-klipper       # Don't update Klipper itself
+./scripts/update.sh --skip-eddy-ng       # Don't update eddy-ng
+./scripts/update.sh --skip-restart       # Don't restart Klipper after update
+
+# Custom paths
+./scripts/update.sh -k ~/klipper -e ~/klippy-env --eddy-ng ~/eddy-ng
+
+# Don't hide patched files (if you don't mind the dirty-repo warning)
+./scripts/update.sh --no-assume-unchanged
+```
+
+**Firmware note:** If eddy-ng MCU firmware was updated, you also need to rebuild and flash:
+```bash
+cd ~/klipper
+make menuconfig   # Ensure WANT_EDDY_NG is selected
+make flash
+```
+
 ## Uninstall
 
 ```bash
