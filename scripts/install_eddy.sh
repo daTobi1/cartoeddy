@@ -207,20 +207,24 @@ function ensure_eddy_ng_repo() {
 }
 
 function install_eddy_ng_files() {
-  # Copy Python driver
+  # Copy Python driver (remove first — may be a symlink from old eddy-ng install)
   local src="$eddy_ng_dir/$EDDY_NG_PYTHON_FILE"
+  local dest="$extras_dir/$EDDY_NG_PYTHON_FILE"
   if [ ! -f "$src" ]; then
     echo "Error: $EDDY_NG_PYTHON_FILE not found in $eddy_ng_dir"
     exit 1
   fi
-  cp "$src" "$extras_dir/$EDDY_NG_PYTHON_FILE"
+  rm -f "$dest"
+  cp "$src" "$dest"
   add_to_git_exclude "${extras_dir#"$klipper_dir"/}/$EDDY_NG_PYTHON_FILE"
   echo "  Copied $EDDY_NG_PYTHON_FILE"
 
-  # Copy firmware C file
+  # Copy firmware C file (remove first — may be a symlink)
   local fw_src="$eddy_ng_dir/$EDDY_NG_FIRMWARE_FILE"
+  local fw_dest="$klipper_dir/src/$(basename "$EDDY_NG_FIRMWARE_FILE")"
   if [ -f "$fw_src" ]; then
-    cp "$fw_src" "$klipper_dir/src/$(basename "$EDDY_NG_FIRMWARE_FILE")"
+    rm -f "$fw_dest"
+    cp "$fw_src" "$fw_dest"
     add_to_git_exclude "src/$(basename "$EDDY_NG_FIRMWARE_FILE")"
     echo "  Copied $(basename "$EDDY_NG_FIRMWARE_FILE")"
   fi
