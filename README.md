@@ -15,20 +15,9 @@ CartoEddy bridges the [eddy-ng](https://github.com/daTobi1/eddy-ng) sensor drive
 
 > **Note:** Temperature calibration (`CARTOGRAPHER_TEMPERATURE_CALIBRATE`) is not applicable — Eddy probes have no on-board coil temperature sensor. Temperature compensation is automatically disabled.
 
-## Prerequisites
-
-1. **Klipper** (or Kalico) installed and running
-2. **eddy-ng** repository cloned (the install script handles file copying)
-   ```bash
-   git clone https://github.com/daTobi1/eddy-ng.git ~/eddy-ng
-   ```
-3. **cartographer3d-plugin** installed
-   ```bash
-   cd ~/cartographer3d-plugin
-   ./scripts/install.sh
-   ```
-
 ## Installation
+
+One command — everything is handled automatically:
 
 ```bash
 git clone https://github.com/daTobi1/cartoeddy.git ~/cartoeddy
@@ -37,11 +26,20 @@ cd ~/cartoeddy
 ```
 
 The install script:
-- Installs eddy-ng Python files **without patching Klipper** (no dirty repo)
-- Copies CartoEddy adapter files into the cartographer package
-- Creates `cartographer_eddy.py` scaffolding in `klippy/extras/`
-- Reverts any old eddy-ng patches if present
-- Adds all new files to `.git/info/exclude`
+1. Installs **cartographer3d-plugin** from PyPI (with numpy dependency)
+2. Clones **eddy-ng** to `~/eddy-ng` (if not already present)
+3. Copies eddy-ng Python files **without patching Klipper** (no dirty repo)
+4. Copies CartoEddy adapter files into the cartographer package
+5. Creates `cartographer_eddy.py` scaffolding in `klippy/extras/`
+6. Reverts any old eddy-ng patches if present
+
+**Options:**
+```bash
+./scripts/install_eddy.sh --help             # Show all options
+./scripts/install_eddy.sh -k ~/klipper       # Custom Klipper path
+./scripts/install_eddy.sh --eddy-ng ~/eddy   # Custom eddy-ng path
+./scripts/install_eddy.sh --uninstall        # Remove CartoEddy
+```
 
 **First-time firmware build** (needed once for the eddy-ng MCU driver):
 ```bash
@@ -52,172 +50,187 @@ This temporarily patches `src/Makefile`, builds & flashes firmware, then reverts
 
 ## Configuration
 
-Add a `[cartographer_eddy]` section to your `printer.cfg`. This replaces both `[probe_eddy_ng]` and `[cartographer]` — do **not** use those sections alongside `[cartographer_eddy]`.
+Replace your `[probe_eddy_ng]` section with `[cartographer_eddy]`. Do **not** keep both.
+
+A complete reference config is included in the repo: [`config/cartographer_eddy.cfg`](config/cartographer_eddy.cfg)
 
 ### Minimal Configuration
 
 ```ini
+[mcu eddy]
+canbus_uuid: YOUR_UUID_HERE
+
 [cartographer_eddy]
-# Sensor pin configuration (same as you'd use for eddy-ng)
-cs_pin: EBBCan:gpio9
-spi_bus: spi1a
-# Or for I2C:
-# i2c_bus: i2c3a_PB3_PB4
-# i2c_address: 43
+sensor_type: btt_eddy
+i2c_mcu: eddy
+i2c_bus: i2c0f
+x_offset: 0.0
+y_offset: 16.0
 
-# Probe offset from nozzle
-x_offset: -36.0
-y_offset: 0.0
+[cartographer_eddy scan]
 
-# Required for virtual endstop homing
+[cartographer_eddy touch]
+
+# REQUIRED in your stepper_z section:
 [stepper_z]
 endstop_pin: probe:z_virtual_endstop
-homing_retract_dist: 0  # REQUIRED: must be 0
-
-[safe_z_home]
-home_xy_position: 150, 150
-z_hop: 10
+homing_retract_dist: 0
 ```
 
 ### Full Configuration Reference
 
 ```ini
 [cartographer_eddy]
-# === Sensor Hardware ===
-# SPI connection (BTT Eddy typical)
-cs_pin: EBBCan:gpio9
-spi_bus: spi1a
-
-# Or I2C connection
-# i2c_bus: i2c3a_PB3_PB4
-# i2c_address: 43
+# === Sensor Hardware (passed to LDC1612_ng) ===
+sensor_type: btt_eddy           # btt_eddy, cartographer, mellow_fly, ldc1612, ldc1612_internal_clk
+i2c_mcu: eddy                   # MCU the sensor is connected to
+i2c_bus: i2c0f                   # I2C bus
+# reg_drive_current: 15         # LDC1612 drive current (0-31, 0=auto)
+# samples_per_second: 250       # Sensor sample rate (min 50)
 
 # === Probe Position ===
-x_offset: -36.0              # Distance from nozzle to probe (X)
-y_offset: 0.0                # Distance from nozzle to probe (Y)
+x_offset: 0.0                   # Distance from nozzle to probe (X mm)
+y_offset: 16.0                  # Distance from nozzle to probe (Y mm)
 
 # === Movement ===
-travel_speed: 50              # Speed (mm/s) for XY travel moves
-lift_speed: 5                 # Speed (mm/s) for Z lift moves
+travel_speed: 50                 # XY travel speed (mm/s)
+lift_speed: 10                   # Z lift speed (mm/s)
 
 # === General ===
-z_backlash: 0.05              # Z backlash compensation (mm)
-verbose: False                # Enable debug logging
-# macro_prefix: EDDY          # Optional: creates aliased macro set (e.g., EDDY_SCAN_CALIBRATE)
-
-# === Tap Detection Mode ===
-# tap_mode: wma               # Options: wma (default), sos/butterworth
-                              # wma = Weighted Moving Average (fast, lightweight)
-                              # sos = Butterworth bandpass filter (cleaner signal, more filtering)
+z_backlash: 0.05                 # Z backlash compensation (mm)
+tap_mode: wma                    # wma (default) or sos/butterworth
+# verbose: false                 # Enable debug logging
+# macro_prefix: EDDY             # Extra macro aliases (e.g. EDDY_TOUCH_HOME)
 
 # === Scan Mode ===
 [cartographer_eddy scan]
-samples: 20                   # Number of samples per probe point
-probe_speed: 5                # Z speed (mm/s) during probing
-mesh_runs: 1                  # Number of mesh passes
-mesh_height: 3                # Head height (mm) during mesh scan
-# mesh_direction: x           # Primary mesh axis (x or y)
-# mesh_path: snake             # Mesh path pattern (snake or zigzag)
+# samples: 20                    # Samples per probe point
+# probe_speed: 5                 # Z probe speed (mm/s)
+# mesh_runs: 1                   # Mesh passes
+# mesh_height: 3                 # Head height during mesh scan (mm)
 
 # === Touch Mode ===
 [cartographer_eddy touch]
-samples: 3                    # Successful samples needed
-max_samples: 10               # Maximum attempts before giving up
-retract_distance: 2.0         # Retract (mm) between touch samples
-sample_range: 0.010           # Acceptable range (mm) between samples
-
-# === Bed Mesh ===
-[bed_mesh]
-speed: 200
-horizontal_move_z: 3
-mesh_min: 10, 10
-mesh_max: 290, 290
-probe_count: 30, 30
-algorithm: bicubic
+samples: 5                       # Successful samples needed
+max_samples: 20                  # Maximum attempts
+sample_range: 0.0050             # Acceptable range between samples (mm)
+# retract_distance: 2.0          # Retract between touch samples (mm)
 ```
 
-### Sensor Type Detection
+### Migration from eddy-ng
 
-The LDC1612_ng driver automatically detects your sensor type (BTT Eddy, Cartographer Eddy, Mellow Fly, etc.) based on the resonant frequency. No `sensor_type` configuration is needed.
+| Alt (`[probe_eddy_ng]`) | Neu (`[cartographer_eddy]`) |
+|---|---|
+| `move_speed` | `travel_speed` |
+| `tap_threshold` | Wird automatisch kalibriert |
+| `tap_speed` | Wird automatisch kalibriert |
+| `tap_adjust_z` | Wird automatisch kalibriert |
+| `tap_samples` | `[cartographer_eddy touch]` → `samples` |
+| `tap_max_samples` | `[cartographer_eddy touch]` → `max_samples` |
+| `tap_samples_stddev` | `[cartographer_eddy touch]` → `sample_range` |
+| `home_trigger_height` | Wird durch Scan-Modell ersetzt |
+| `calibration_z_max` | Nicht noetig |
+| `tap_start_z`, `tap_target_z` | Nicht noetig (Cartographer managt das) |
+| `write_tap_plot` | Nicht verfuegbar |
+| `PROBE_EDDY_NG_TAP` | `CARTOGRAPHER_TOUCH_HOME` |
+| `BED_MESH_CALIBRATE METHOD=rapid_scan` | `BED_MESH_CALIBRATE` |
 
-## Calibration Workflow
+## Calibration
 
-### 1. Scan Calibration (required first)
+After installation and config, restart Klipper and follow this workflow.
 
-This creates a polynomial model mapping sensor frequency to Z distance:
+### Step 1: Scan Calibration (required)
+
+Creates a polynomial model mapping sensor frequency to Z distance. This is the foundation for all probing.
 
 ```
 CARTOGRAPHER_SCAN_CALIBRATE METHOD=TOUCH
 ```
 
-Or with manual paper test:
-```
-CARTOGRAPHER_SCAN_CALIBRATE METHOD=MANUAL
-```
+This uses touch to find Z=0, then scans across a range of heights to build the model. Alternatively, use `METHOD=MANUAL` for a paper-test based zero.
 
-After calibration, a model is saved automatically. You can verify it:
+After calibration, verify:
 ```
 CARTOGRAPHER_SCAN_MODEL LIST=1
 ```
 
-### 2. Touch Calibration (optional, for touch homing)
+Save immediately:
+```
+SAVE_CONFIG
+```
 
-If you want to use touch-based Z homing (more accurate than scan):
+### Step 2: Touch Calibration (recommended)
+
+Touch mode provides more accurate Z homing than scan mode. The calibration automatically finds the optimal threshold for your setup.
 
 ```
 CARTOGRAPHER_TOUCH_CALIBRATE
 ```
 
-This automatically finds the optimal touch threshold for your setup by iterating from a start value upwards until it finds a threshold that produces consistent, repeatable results.
-
 **How auto-calibration works:**
-1. **Screening phase** — collects a few samples at the current threshold, checks if a consistent subset exists
-2. **Verification phase** — runs multiple full touch probe sequences to confirm reliability
-3. **Increment** — if the threshold fails, it's increased (10-20% steps) and retried
+1. **Screening** — collects samples at the current threshold, checks for consistent subset
+2. **Verification** — runs multiple full touch sequences to confirm reliability
+3. **Increment** — if threshold fails, increases by 10-20% and retries
 4. Stops at the **minimum threshold that passes both phases**
 
 **Tap mode selection** (`tap_mode` in config):
 
-| Mode | Config Value | Default Threshold Range | Characteristics |
-|------|-------------|------------------------|-----------------|
-| **WMA** | `wma` (default) | 500 - 2000 | Fast, lightweight integer math. Tracks weighted average of frequency derivative. Good general-purpose choice. |
-| **Butterworth** | `sos` or `butterworth` | 100 - 500 | IIR bandpass filter (5-25 Hz). Cleaner signal, better noise rejection. Slightly more MCU load and phase lag. |
+| Mode | Config | Typical Threshold | Best for |
+|------|--------|-------------------|----------|
+| **WMA** | `wma` (default) | 500 - 2000 | General purpose, fast integer math |
+| **Butterworth** | `sos` | 100 - 500 | Noisy setups, better signal filtering |
 
-**Calibration parameters:**
+**Custom parameters:**
 ```
-# Use defaults (START=500, MAX=5000):
+# For WMA (default):
 CARTOGRAPHER_TOUCH_CALIBRATE
 
 # For Butterworth mode, start lower:
 CARTOGRAPHER_TOUCH_CALIBRATE START=100 MAX=2000
 
-# Customize verification:
+# Custom verification:
 CARTOGRAPHER_TOUCH_CALIBRATE SPEED=2 VERIFICATION_SAMPLES=10
 ```
 
-**Threshold guidance:**
-- The auto-calibration finds the optimal value — use it as-is
-- Lower = more sensitive (may false trigger), Higher = less sensitive (may miss contact)
-- WMA thresholds are typically higher than Butterworth thresholds
-- If calibration fails, try the other `tap_mode` or check mechanical setup
+Save immediately:
+```
+SAVE_CONFIG
+```
 
-### 3. Verify Accuracy
+### Step 3: Verify Accuracy
 
 ```
-# Scan mode accuracy
+# Scan mode accuracy (should be < 0.01mm range):
 CARTOGRAPHER_SCAN_ACCURACY
 
-# Touch mode accuracy (after touch calibration)
+# Touch mode accuracy (should be < 0.005mm range):
 CARTOGRAPHER_TOUCH_ACCURACY
 ```
 
-### 4. Bed Mesh
+### Step 4: Bed Mesh
 
 ```
 BED_MESH_CALIBRATE
 ```
 
 Uses Cartographer's rapid scan mesh — much faster than point-by-point probing.
+
+### Recalibration
+
+Recalibrate when:
+- You change the nozzle
+- You change the build plate
+- Touch results become inconsistent
+- After significant hardware changes
+
+```
+# Full recalibration:
+CARTOGRAPHER_SCAN_CALIBRATE METHOD=TOUCH
+SAVE_CONFIG
+# After restart:
+CARTOGRAPHER_TOUCH_CALIBRATE
+SAVE_CONFIG
+```
 
 ## Available GCode Commands
 
@@ -242,7 +255,34 @@ All standard Cartographer commands work:
 | `CARTOGRAPHER_ESTIMATE_BACKLASH` | Estimate Z backlash |
 | `Z_OFFSET_APPLY_PROBE` | Apply Z offset from probe |
 
-> `CARTOGRAPHER_TEMPERATURE_CALIBRATE` is registered but will not produce useful results (Eddy has no coil temperature sensor — temperature is always reported as 0).
+> `CARTOGRAPHER_TEMPERATURE_CALIBRATE` is registered but will not produce useful results (Eddy has no coil temperature sensor).
+
+## Updating
+
+Full-stack update that keeps the Klipper repo **100% clean**:
+
+```bash
+cd ~/cartoeddy
+./scripts/update.sh
+```
+
+This pulls and re-installs all components (Klipper, eddy-ng, Cartographer, CartoEddy) then restarts Klipper.
+
+```bash
+# Also rebuild & flash firmware:
+./scripts/update.sh --flash
+
+# Skip components:
+./scripts/update.sh --skip-klipper --skip-eddy-ng
+
+# Custom paths:
+./scripts/update.sh -k ~/klipper -e ~/klippy-env --eddy-ng ~/eddy-ng
+```
+
+**Why the Klipper repo stays clean:**
+- eddy-ng's `bed_mesh.py` patch is **not needed** (Cartographer has its own)
+- `Makefile` patch is **only applied temporarily** during `--flash` builds
+- All added files are hidden via `.git/info/exclude`
 
 ## Architecture
 
@@ -252,7 +292,7 @@ All standard Cartographer commands work:
         ▼
   extra_eddy.py          ← Entry point (load_config)
         │
-        ├── LDC1612_ng   ← eddy-ng sensor driver (I2C/SPI communication)
+        ├── LDC1612_ng   ← eddy-ng sensor driver (I2C/SPI)
         │
         ├── EddyMcu      ← Implements Cartographer Mcu protocol
         │   ├── Bridges BatchBulkHelper → Stream[Sample]
@@ -276,79 +316,41 @@ All standard Cartographer commands work:
 | Connection | USB/CAN (dedicated MCU) | I2C/SPI via printer MCU |
 | Temperature sensor | On-board coil temp | None (disabled) |
 | Temperature compensation | Yes | No (not needed for most setups) |
-| Touch detection | Custom firmware | eddy-ng WMA or Butterworth mode |
+| Touch detection | Custom firmware | eddy-ng WMA or Butterworth |
 | Scan mode | Native | Via eddy-ng frequency conversion |
 | All macros | Yes | Yes (except temp calibrate) |
 
 ## Troubleshooting
 
 ### "Eddy sensor not ready after 5.0s"
-The sensor couldn't get a valid reading within 5 seconds of a homing attempt. Check:
+The sensor couldn't get a valid reading within 5 seconds. Check:
 - Coil connection and power
-- I2C/SPI bus configuration
+- I2C bus configuration (`i2c_mcu`, `i2c_bus`)
 - That the sensor is close enough to a metallic surface
 
 ### "Could not import ldc1612_ng"
-eddy-ng Python files are not installed. Re-run the installer:
+eddy-ng Python files are not installed. Re-run:
 ```bash
 cd ~/cartoeddy && ./scripts/install_eddy.sh
 ```
 
 ### "Communication timeout during homing"
-The MCU lost synchronization during a homing move. This can happen if:
-- The homing speed is too fast
-- The sensor is too far from the bed when starting
-- There's electrical noise on the I2C/SPI bus
+The MCU lost synchronization. Check:
+- Homing speed (try slower)
+- Sensor distance from bed when starting
+- Electrical noise on I2C bus
 
 ### Touch mode gives inconsistent results
-- Try switching `tap_mode` between `wma` and `sos` (Butterworth may work better for noisy setups)
-- Try adjusting `sample_range` (default 0.010mm)
-- Increase `retract_distance` if samples are too close
-- Re-run `CARTOGRAPHER_TOUCH_CALIBRATE` to find optimal threshold
-- For Butterworth mode, use lower START value: `CARTOGRAPHER_TOUCH_CALIBRATE START=100`
+- Switch `tap_mode` between `wma` and `sos`
+- Increase `sample_range` slightly (e.g. 0.008)
+- Re-run `CARTOGRAPHER_TOUCH_CALIBRATE`
+- For Butterworth: `CARTOGRAPHER_TOUCH_CALIBRATE START=100`
 
-## Updating
-
-CartoEddy includes a full-stack update script that keeps the Klipper repo **100% clean** — no dirty-repo warnings in Moonraker, and Klipper updates show up normally.
-
-```bash
-cd ~/cartoeddy
-./scripts/update.sh
+### "homing_retract_dist must be set to 0"
+Add to your `[stepper_z]` section:
+```ini
+homing_retract_dist: 0
 ```
-
-**How it stays clean:**
-- eddy-ng's `bed_mesh.py` patch is **not needed** (Cartographer has its own bed mesh)
-- eddy-ng's `Makefile` patch is **only applied temporarily** during firmware builds
-- Python files (`ldc1612_ng.py`) and firmware (`sensor_ldc1612_ng.c`) are added as **untracked files** hidden via `.git/info/exclude`
-- No `assume-unchanged` hacks needed
-
-**What it does:**
-1. Cleans up any old eddy-ng patches (from previous `install.py` runs)
-2. Pulls Klipper updates (`git pull --ff-only`)
-3. Pulls & re-installs eddy-ng (Python files only, no patches)
-4. Pulls & re-installs Cartographer (pip upgrade)
-5. Pulls & re-installs CartoEddy (copies adapter files)
-6. Verifies Klipper repo is clean
-7. Restarts Klipper service
-
-**Options:**
-```bash
-# Standard update:
-./scripts/update.sh
-
-# Also rebuild & flash firmware (Makefile patched temporarily):
-./scripts/update.sh --flash
-
-# Skip specific components:
-./scripts/update.sh --skip-klipper
-./scripts/update.sh --skip-eddy-ng
-./scripts/update.sh --skip-restart
-
-# Custom paths:
-./scripts/update.sh -k ~/klipper -e ~/klippy-env --eddy-ng ~/eddy-ng
-```
-
-**Firmware builds:** The `--flash` flag temporarily patches `src/Makefile` to include `sensor_ldc1612_ng.c`, runs `make && make flash`, then immediately reverts the patch. The repo stays clean.
 
 ## Uninstall
 
@@ -357,7 +359,7 @@ cd ~/cartoeddy
 ./scripts/install_eddy.sh --uninstall
 ```
 
-Then remove the `[cartographer_eddy]` section from your `printer.cfg`.
+Then remove the `[cartographer_eddy]` sections from your `printer.cfg`.
 
 ## License
 
