@@ -7,30 +7,32 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 MODULE_NAME="cartographer_eddy.py"
 SCAFFOLDING="from cartographer.extra_eddy import *"
+CARTOGRAPHER_MODULE_NAME="cartographer.py"
+CARTOGRAPHER_PACKAGE_NAME="cartographer3d-plugin"
+CARTOGRAPHER_SCAFFOLDING="from cartographer.extra import *"
+
 DEFAULT_KLIPPER_DIR="$HOME/klipper"
 DEFAULT_KLIPPY_ENV="$HOME/klippy-env"
 DEFAULT_EDDY_NG_DIR="$HOME/eddy-ng"
 
-# eddy-ng Python file needed in klippy/extras/
-EDDY_NG_PYTHON_FILE="ldc1612_ng.py"
+EDDY_NG_REPO="https://github.com/daTobi1/eddy-ng.git"
 
-# eddy-ng firmware file
+# eddy-ng files
+EDDY_NG_PYTHON_FILE="ldc1612_ng.py"
 EDDY_NG_FIRMWARE_FILE="eddy-ng/sensor_ldc1612_ng.c"
 
 function display_help() {
   echo "Usage: $0 [OPTIONS]"
   echo ""
-  echo "Installs the Cartographer Eddy integration."
+  echo "One-step installer for CartoEddy (Cartographer + eddy-ng integration)."
   echo ""
-  echo "This script:"
-  echo "  1. Installs eddy-ng Python files (without patching Klipper)"
-  echo "  2. Copies CartoEddy adapter files into the cartographer package"
-  echo "  3. Creates the cartographer_eddy.py scaffolding in klippy/extras/"
-  echo "  4. Reverts any old eddy-ng patches (bed_mesh.py, Makefile)"
-  echo ""
-  echo "Prerequisites:"
-  echo "  - eddy-ng repository cloned (default: ~/eddy-ng)"
-  echo "  - cartographer3d-plugin must already be installed"
+  echo "This script automatically:"
+  echo "  1. Installs cartographer3d-plugin (if not already installed)"
+  echo "  2. Clones eddy-ng (if not already cloned)"
+  echo "  3. Installs eddy-ng Python files (without patching Klipper)"
+  echo "  4. Copies CartoEddy adapter files into the cartographer package"
+  echo "  5. Creates the cartographer_eddy.py scaffolding"
+  echo "  6. Reverts any old eddy-ng patches (bed_mesh.py, Makefile)"
   echo ""
   echo "Options:"
   echo "  -k, --klipper       Klipper directory (default: $DEFAULT_KLIPPER_DIR)"
@@ -75,24 +77,11 @@ function parse_args() {
 
 function check_directory_exists() {
   local dir="$1"
+  local name="${2:-$dir}"
   if [ ! -d "$dir" ]; then
-    echo "Error: Directory '$dir' does not exist."
+    echo "Error: $name directory '$dir' does not exist."
     exit 1
   fi
-}
-
-function get_cartographer_package_dir() {
-  cartographer_pkg_dir=$("$klippy_env/bin/python" -c "
-import cartographer
-import os
-print(os.path.dirname(cartographer.__file__))
-" 2>/dev/null) || true
-  if [ -z "$cartographer_pkg_dir" ] || [ ! -d "$cartographer_pkg_dir" ]; then
-    echo "Error: Could not locate cartographer package in '$klippy_env'."
-    echo "Make sure cartographer3d-plugin is installed."
-    exit 1
-  fi
-  echo "Found cartographer package at: $cartographer_pkg_dir"
 }
 
 function get_extras_dir() {
@@ -115,75 +104,133 @@ function add_to_git_exclude() {
   fi
 }
 
-# ──────────────────────────────────────────────────────────────
-# Clean up old eddy-ng patches (bed_mesh.py + Makefile)
-# CartoEddy does NOT need these patches.
-# ──────────────────────────────────────────────────────────────
-
-function clean_old_patches() {
-  echo "Checking for old eddy-ng patches..."
-  cd "$klipper_dir"
-
-  local old_patched_files=("klippy/extras/bed_mesh.py" "src/Makefile")
-  local cleaned=false
-
-  for f in "${old_patched_files[@]}"; do
-    # Lift assume-unchanged if set
-    git update-index --no-assume-unchanged "$f" 2>/dev/null || true
-
-    # Revert if modified
-    if ! git diff --quiet "$f" 2>/dev/null; then
-      git checkout -- "$f"
-      echo "  Reverted old patch: $f"
-      cleaned=true
-    fi
-  done
-
-  if [ "$cleaned" = true ]; then
-    echo "  Old eddy-ng patches removed (CartoEddy doesn't need them)."
-  else
-    echo "  No old patches found."
+function get_cartographer_package_dir() {
+  cartographer_pkg_dir=$("$klippy_env/bin/python" -c "
+import cartographer
+import os
+print(os.path.dirname(cartographer.__file__))
+" 2>/dev/null) || true
+  if [ -z "$cartographer_pkg_dir" ] || [ ! -d "$cartographer_pkg_dir" ]; then
+    echo "Error: Could not locate cartographer package in '$klippy_env'."
+    exit 1
   fi
 }
 
 # ──────────────────────────────────────────────────────────────
-# Install eddy-ng Python files (without Klipper patches)
+# Phase 1: Install cartographer3d-plugin from PyPI
 # ──────────────────────────────────────────────────────────────
 
-function install_eddy_ng_files() {
-  echo "Installing eddy-ng files (patch-free)..."
+function ensure_numpy() {
+  "$klippy_env/bin/python" -c "
+import sys
+try:
+    import numpy
+    version = tuple(map(int, numpy.__version__.split('.')[:2]))
+    if version >= (1, 16):
+        print(f'  numpy {numpy.__version__} OK')
+        sys.exit(0)
+    else:
+        print(f'  numpy {numpy.__version__} too old, upgrading...')
+        sys.exit(1)
+except ImportError:
+    print('  numpy not found, installing...')
+    sys.exit(1)
+" || "$klippy_env/bin/pip" install "numpy~=1.16"
+}
 
+function remove_legacy_cartographer_files() {
+  local files=("idm.py" "scanner.py" "cartographer.py")
+  local paths=("$klipper_dir/klippy/extras" "$klipper_dir/klippy/plugins")
+
+  for dir in "${paths[@]}"; do
+    [ ! -d "$dir" ] && continue
+    for file in "${files[@]}"; do
+      local full_path="$dir/$file"
+      local rel_path="${dir#"$klipper_dir"/}/$file"
+      if [ -f "$full_path" ] || [ -L "$full_path" ]; then
+        rm "$full_path"
+        echo "  Removed legacy: $rel_path"
+        local exclude_file="$klipper_dir/.git/info/exclude"
+        if [ -f "$exclude_file" ]; then
+          sed -i "\|^$rel_path\$|d" "$exclude_file" 2>/dev/null || true
+        fi
+      fi
+    done
+  done
+}
+
+function install_cartographer() {
+  # Check if already installed
+  local installed_version
+  installed_version=$("$klippy_env/bin/python" -c "
+import cartographer
+print(cartographer.__version__)
+" 2>/dev/null) || true
+
+  if [ -n "$installed_version" ]; then
+    echo "  Cartographer $installed_version already installed, upgrading..."
+  else
+    echo "  Cartographer not found, installing..."
+  fi
+
+  remove_legacy_cartographer_files
+
+  ensure_numpy
+  "$klippy_env/bin/pip" install --upgrade "$CARTOGRAPHER_PACKAGE_NAME" 2>&1 | tail -1
+  echo "  $CARTOGRAPHER_PACKAGE_NAME installed."
+
+  # Create cartographer scaffolding
+  local scaffolding_path="$extras_dir/$CARTOGRAPHER_MODULE_NAME"
+  local scaffolding_rel_path="${extras_dir#"$klipper_dir"/}/$CARTOGRAPHER_MODULE_NAME"
+
+  if [ -L "$scaffolding_path" ]; then
+    rm "$scaffolding_path"
+  fi
+  echo "$CARTOGRAPHER_SCAFFOLDING" >"$scaffolding_path"
+  add_to_git_exclude "$scaffolding_rel_path"
+  echo "  Created scaffolding: $CARTOGRAPHER_MODULE_NAME"
+}
+
+# ──────────────────────────────────────────────────────────────
+# Phase 2: Clone & install eddy-ng
+# ──────────────────────────────────────────────────────────────
+
+function ensure_eddy_ng_repo() {
+  if [ -d "$eddy_ng_dir" ]; then
+    echo "  eddy-ng repo found at $eddy_ng_dir"
+    return
+  fi
+
+  echo "  Cloning eddy-ng..."
+  git clone "$EDDY_NG_REPO" "$eddy_ng_dir" 2>&1 | while IFS= read -r line; do echo "    $line"; done
+  echo "  eddy-ng cloned to $eddy_ng_dir"
+}
+
+function install_eddy_ng_files() {
   # Copy Python driver
   local src="$eddy_ng_dir/$EDDY_NG_PYTHON_FILE"
-  local dest="$extras_dir/$EDDY_NG_PYTHON_FILE"
   if [ ! -f "$src" ]; then
-    echo "Error: eddy-ng not found at $eddy_ng_dir"
-    echo "Clone it first: git clone https://github.com/daTobi1/eddy-ng.git $eddy_ng_dir"
+    echo "Error: $EDDY_NG_PYTHON_FILE not found in $eddy_ng_dir"
     exit 1
   fi
-  cp "$src" "$dest"
+  cp "$src" "$extras_dir/$EDDY_NG_PYTHON_FILE"
   add_to_git_exclude "${extras_dir#"$klipper_dir"/}/$EDDY_NG_PYTHON_FILE"
-  echo "  Copied $EDDY_NG_PYTHON_FILE → $extras_dir/"
+  echo "  Copied $EDDY_NG_PYTHON_FILE"
 
   # Copy firmware C file
   local fw_src="$eddy_ng_dir/$EDDY_NG_FIRMWARE_FILE"
-  local fw_dest="$klipper_dir/src/$(basename "$EDDY_NG_FIRMWARE_FILE")"
   if [ -f "$fw_src" ]; then
-    cp "$fw_src" "$fw_dest"
+    cp "$fw_src" "$klipper_dir/src/$(basename "$EDDY_NG_FIRMWARE_FILE")"
     add_to_git_exclude "src/$(basename "$EDDY_NG_FIRMWARE_FILE")"
-    echo "  Copied $(basename "$EDDY_NG_FIRMWARE_FILE") → src/"
+    echo "  Copied $(basename "$EDDY_NG_FIRMWARE_FILE")"
   fi
-
-  echo "  eddy-ng installed (no Klipper patches applied)."
 }
 
 # ──────────────────────────────────────────────────────────────
-# Install CartoEddy adapter files
+# Phase 3: Install CartoEddy adapter files
 # ──────────────────────────────────────────────────────────────
 
 function install_eddy_adapter_files() {
-  echo "Installing CartoEddy adapter files into cartographer package..."
-
   local eddy_dir="$cartographer_pkg_dir/adapters/eddy"
   mkdir -p "$eddy_dir"
 
@@ -203,10 +250,6 @@ function install_eddy_adapter_files() {
   echo "  Updated runtime/loader.py and runtime/environment.py"
 }
 
-# ──────────────────────────────────────────────────────────────
-# Create scaffolding file
-# ──────────────────────────────────────────────────────────────
-
 function create_scaffolding() {
   local scaffolding_path="$extras_dir/$MODULE_NAME"
   local scaffolding_rel_path="${extras_dir#"$klipper_dir"/}/$MODULE_NAME"
@@ -217,7 +260,25 @@ function create_scaffolding() {
 
   echo "$SCAFFOLDING" >"$scaffolding_path"
   add_to_git_exclude "$scaffolding_rel_path"
-  echo "  Created scaffolding: $scaffolding_path"
+  echo "  Created scaffolding: $MODULE_NAME"
+}
+
+# ──────────────────────────────────────────────────────────────
+# Clean up old eddy-ng patches
+# ──────────────────────────────────────────────────────────────
+
+function clean_old_patches() {
+  cd "$klipper_dir"
+
+  local old_patched_files=("klippy/extras/bed_mesh.py" "src/Makefile")
+
+  for f in "${old_patched_files[@]}"; do
+    git update-index --no-assume-unchanged "$f" 2>/dev/null || true
+    if ! git diff --quiet "$f" 2>/dev/null; then
+      git checkout -- "$f"
+      echo "  Reverted old patch: $f"
+    fi
+  done
 }
 
 # ──────────────────────────────────────────────────────────────
@@ -249,7 +310,6 @@ function uninstall_eddy() {
     fi
   fi
 
-  # Clean up any remaining patches
   clean_old_patches
 
   echo ""
@@ -269,40 +329,50 @@ function main() {
 
   parse_args "$@"
 
-  check_directory_exists "$klipper_dir"
+  check_directory_exists "$klipper_dir" "Klipper"
+  check_directory_exists "$klippy_env" "klippy-env"
   get_extras_dir
 
   if [ "$uninstall" = true ]; then
     uninstall_eddy
-  else
-    # Verify cartographer is installed
-    get_cartographer_package_dir
-
-    # Clean old patches, install fresh
-    clean_old_patches
-    install_eddy_ng_files
-    install_eddy_adapter_files
-    create_scaffolding
-
-    echo ""
-    echo "========================================="
-    echo " CartoEddy installed successfully!"
-    echo "========================================="
-    echo ""
-    echo "Klipper repo is CLEAN — no dirty-repo warnings."
-    echo ""
-    echo "Next steps:"
-    echo "  1. Add [cartographer_eddy] section to your printer.cfg"
-    echo "  2. Remove any existing [probe_eddy_ng] section"
-    echo "  3. Restart Klipper"
-    echo "  4. Run: CARTOGRAPHER_SCAN_CALIBRATE METHOD=TOUCH"
-    echo ""
-    echo "First-time firmware build:"
-    echo "  cd $klipper_dir"
-    echo "  # The update script handles the Makefile patch temporarily:"
-    echo "  cd $(dirname "$SCRIPT_DIR") && ./scripts/update.sh --flash --skip-klipper --skip-cartographer --skip-cartoeddy"
-    echo ""
+    return
   fi
+
+  echo ""
+  echo "Installing CartoEddy..."
+  echo ""
+
+  # Phase 1: Cartographer
+  echo "--- Cartographer ---"
+  install_cartographer
+
+  # Phase 2: eddy-ng
+  echo ""
+  echo "--- eddy-ng ---"
+  ensure_eddy_ng_repo
+  clean_old_patches
+  install_eddy_ng_files
+
+  # Phase 3: CartoEddy adapter
+  echo ""
+  echo "--- CartoEddy ---"
+  get_cartographer_package_dir
+  install_eddy_adapter_files
+  create_scaffolding
+
+  echo ""
+  echo "========================================="
+  echo " CartoEddy installed successfully!"
+  echo "========================================="
+  echo ""
+  echo "Klipper repo is CLEAN — no dirty-repo warnings."
+  echo ""
+  echo "Next steps:"
+  echo "  1. Add [cartographer_eddy] section to your printer.cfg"
+  echo "  2. Remove any existing [probe_eddy_ng] section"
+  echo "  3. Restart Klipper"
+  echo "  4. Run: CARTOGRAPHER_SCAN_CALIBRATE METHOD=TOUCH"
+  echo ""
 }
 
 main "$@"
