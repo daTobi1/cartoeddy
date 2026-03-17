@@ -9,7 +9,7 @@ from cartographer.adapters.klipper.probe import KlipperCartographerProbe
 from cartographer.adapters.klipper_like.integrator import KlipperLikeIntegrator
 
 if TYPE_CHECKING:
-    from cartographer.adapters.eddy.adapters import EddyAdapters
+    from cartoeddy.adapters import EddyAdapters
     from cartographer.core import PrinterCartographer
 
 logger = logging.getLogger(__name__)

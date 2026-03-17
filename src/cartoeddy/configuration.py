@@ -25,7 +25,7 @@ from cartographer.interfaces.configuration import (
 if TYPE_CHECKING:
     from configfile import ConfigWrapper
 
-    from cartographer.adapters.eddy.mcu import EddyMcu
+    from cartoeddy.mcu import EddyMcu
 
 logger = logging.getLogger(__name__)
 

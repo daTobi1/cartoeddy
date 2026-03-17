@@ -3,9 +3,9 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, final
 
-from cartographer.adapters.eddy.configuration import EddyConfiguration
-from cartographer.adapters.eddy.mcu import TAP_MODE_SOS, TAP_MODE_WMA, EddyMcu
-from cartographer.adapters.eddy.toolhead import EddyToolhead
+from cartoeddy.configuration import EddyConfiguration
+from cartoeddy.mcu import TAP_MODE_SOS, TAP_MODE_WMA, EddyMcu
+from cartoeddy.toolhead import EddyToolhead
 from cartographer.adapters.klipper.bed_mesh import KlipperBedMesh
 from cartographer.adapters.klipper.gcode import KlipperGCodeDispatch
 from cartographer.adapters.klipper.scheduler import KlipperScheduler

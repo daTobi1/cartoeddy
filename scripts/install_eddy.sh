@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 MODULE_NAME="cartographer_eddy.py"
-SCAFFOLDING="from cartographer.extra_eddy import *"
+SCAFFOLDING="from cartoeddy.extra_eddy import *"
 CARTOGRAPHER_MODULE_NAME="cartographer.py"
 CARTOGRAPHER_PACKAGE_NAME="cartographer3d-plugin"
 CARTOGRAPHER_SCAFFOLDING="from cartographer.extra import *"
@@ -28,9 +28,9 @@ function display_help() {
   echo ""
   echo "This script automatically:"
   echo "  1. Installs cartographer3d-plugin (if not already installed)"
-  echo "  2. Clones eddy-ng (if not already cloned)"
-  echo "  3. Installs eddy-ng Python files (without patching Klipper)"
-  echo "  4. Copies CartoEddy adapter files into the cartographer package"
+  echo "  2. Installs the cartoeddy pip package"
+  echo "  3. Clones eddy-ng (if not already cloned)"
+  echo "  4. Installs eddy-ng Python files (without patching Klipper)"
   echo "  5. Creates the cartographer_eddy.py scaffolding"
   echo "  6. Reverts any old eddy-ng patches (bed_mesh.py, Makefile)"
   echo ""
@@ -101,18 +101,6 @@ function add_to_git_exclude() {
     if [ -d "$klipper_dir/.git" ] && ! grep -qF "$rel_path" "$exclude_file" 2>/dev/null; then
       echo "$rel_path" >>"$exclude_file"
     fi
-  fi
-}
-
-function get_cartographer_package_dir() {
-  cartographer_pkg_dir=$("$klippy_env/bin/python" -c "
-import cartographer
-import os
-print(os.path.dirname(cartographer.__file__))
-" 2>/dev/null) || true
-  if [ -z "$cartographer_pkg_dir" ] || [ ! -d "$cartographer_pkg_dir" ]; then
-    echo "Error: Could not locate cartographer package in '$klippy_env'."
-    exit 1
   fi
 }
 
@@ -231,27 +219,12 @@ function install_eddy_ng_files() {
 }
 
 # ──────────────────────────────────────────────────────────────
-# Phase 3: Install CartoEddy adapter files
+# Phase 3: Install CartoEddy pip package
 # ──────────────────────────────────────────────────────────────
 
-function install_eddy_adapter_files() {
-  local eddy_dir="$cartographer_pkg_dir/adapters/eddy"
-  mkdir -p "$eddy_dir"
-
-  cp "$REPO_DIR/src/cartographer/adapters/eddy/__init__.py" "$eddy_dir/"
-  cp "$REPO_DIR/src/cartographer/adapters/eddy/mcu.py" "$eddy_dir/"
-  cp "$REPO_DIR/src/cartographer/adapters/eddy/configuration.py" "$eddy_dir/"
-  cp "$REPO_DIR/src/cartographer/adapters/eddy/integrator.py" "$eddy_dir/"
-  cp "$REPO_DIR/src/cartographer/adapters/eddy/toolhead.py" "$eddy_dir/"
-  cp "$REPO_DIR/src/cartographer/adapters/eddy/adapters.py" "$eddy_dir/"
-  echo "  Copied adapters/eddy/ (6 files)"
-
-  cp "$REPO_DIR/src/cartographer/extra_eddy.py" "$cartographer_pkg_dir/"
-  echo "  Copied extra_eddy.py"
-
-  cp "$REPO_DIR/src/cartographer/runtime/loader.py" "$cartographer_pkg_dir/runtime/"
-  cp "$REPO_DIR/src/cartographer/runtime/environment.py" "$cartographer_pkg_dir/runtime/"
-  echo "  Updated runtime/loader.py and runtime/environment.py"
+function install_cartoeddy() {
+  "$klippy_env/bin/pip" install "$REPO_DIR" 2>&1 | tail -1
+  echo "  cartoeddy pip package installed."
 }
 
 function create_scaffolding() {
@@ -286,6 +259,32 @@ function clean_old_patches() {
 }
 
 # ──────────────────────────────────────────────────────────────
+# Clean up old CartoEddy files from cartographer site-packages
+# ──────────────────────────────────────────────────────────────
+
+function clean_old_cartoeddy_files() {
+  local cartographer_pkg_dir
+  cartographer_pkg_dir=$("$klippy_env/bin/python" -c "
+import cartographer
+import os
+print(os.path.dirname(cartographer.__file__))
+" 2>/dev/null) || true
+
+  if [ -z "$cartographer_pkg_dir" ] || [ ! -d "$cartographer_pkg_dir" ]; then
+    return
+  fi
+
+  if [ -d "$cartographer_pkg_dir/adapters/eddy" ]; then
+    rm -rf "$cartographer_pkg_dir/adapters/eddy"
+    echo "  Cleaned old adapters/eddy/ from cartographer site-packages"
+  fi
+  if [ -f "$cartographer_pkg_dir/extra_eddy.py" ]; then
+    rm "$cartographer_pkg_dir/extra_eddy.py"
+    echo "  Cleaned old extra_eddy.py from cartographer site-packages"
+  fi
+}
+
+# ──────────────────────────────────────────────────────────────
 # Uninstall
 # ──────────────────────────────────────────────────────────────
 
@@ -301,25 +300,18 @@ function uninstall_eddy() {
     rm "$scaffolding"
   fi
 
-  # Remove eddy files from cartographer package
-  get_cartographer_package_dir 2>/dev/null || true
-  if [ -n "${cartographer_pkg_dir:-}" ] && [ -d "$cartographer_pkg_dir" ]; then
-    if [ -d "$cartographer_pkg_dir/adapters/eddy" ]; then
-      echo "  Removing adapters/eddy/"
-      rm -rf "$cartographer_pkg_dir/adapters/eddy"
-    fi
-    if [ -f "$cartographer_pkg_dir/extra_eddy.py" ]; then
-      echo "  Removing extra_eddy.py"
-      rm "$cartographer_pkg_dir/extra_eddy.py"
-    fi
-  fi
+  # Uninstall pip package
+  "$klippy_env/bin/pip" uninstall -y cartoeddy 2>/dev/null || true
+  echo "  Uninstalled cartoeddy pip package"
+
+  # Clean up old files from cartographer site-packages (from previous installs)
+  clean_old_cartoeddy_files
 
   clean_old_patches
 
   echo ""
   echo "CartoEddy uninstalled."
   echo "Note: eddy-ng files (ldc1612_ng.py, sensor_ldc1612_ng.c) were not removed."
-  echo "Note: runtime/loader.py was modified — re-install cartographer to restore."
 }
 
 # ──────────────────────────────────────────────────────────────
@@ -357,11 +349,11 @@ function main() {
   clean_old_patches
   install_eddy_ng_files
 
-  # Phase 3: CartoEddy adapter
+  # Phase 3: CartoEddy pip package
   echo ""
   echo "--- CartoEddy ---"
-  get_cartographer_package_dir
-  install_eddy_adapter_files
+  clean_old_cartoeddy_files
+  install_cartoeddy
   create_scaffolding
 
   echo ""

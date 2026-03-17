@@ -52,6 +52,8 @@ function display_help() {
   echo "  --cartographer          cartographer3d-plugin directory (default: $DEFAULT_CARTOGRAPHER_DIR)"
   echo "  --cartoeddy             cartoeddy directory (default: $DEFAULT_CARTOEDDY_DIR)"
   echo "  --flash                 Also rebuild & flash MCU firmware (applies Makefile patch temporarily)"
+  echo "  --can-uuid UUID         CAN bus UUID of the Eddy probe (prompted interactively if omitted)"
+  echo "  --can-interface IFACE   CAN interface name (default: can0)"
   echo "  --skip-klipper          Skip Klipper git pull"
   echo "  --skip-eddy-ng          Skip eddy-ng update"
   echo "  --skip-cartographer     Skip Cartographer update"
@@ -89,6 +91,8 @@ function parse_args() {
   skip_cartoeddy=false
   skip_restart=false
   do_flash=false
+  can_uuid=""
+  can_interface="can0"
 
   while [[ "$#" -gt 0 ]]; do
     case "$1" in
@@ -98,6 +102,8 @@ function parse_args() {
     --cartographer)         cartographer_dir="$2";  shift 2 ;;
     --cartoeddy)            cartoeddy_dir="$2";     shift 2 ;;
     --flash)                do_flash=true;           shift ;;
+    --can-uuid)             can_uuid="$2";          shift 2 ;;
+    --can-interface)        can_interface="$2";      shift 2 ;;
     --skip-klipper)         skip_klipper=true;      shift ;;
     --skip-eddy-ng)         skip_eddy_ng=true;      shift ;;
     --skip-cartographer)    skip_cartographer=true;  shift ;;
@@ -325,14 +331,73 @@ function update_cartoeddy() {
     log_ok "Updated $before → $after"
   fi
 
-  log_step "Re-installing CartoEddy adapter files"
-  ./scripts/install_eddy.sh -k "$klipper_dir" -e "$klippy_env" 2>&1 | while IFS= read -r line; do echo "  $line"; done
+  log_step "Re-installing CartoEddy pip package"
+  "$klippy_env/bin/pip" install "$cartoeddy_dir" 2>&1 | tail -1
   log_ok "CartoEddy installed"
 }
 
 # ──────────────────────────────────────────────────────────────
 # Flash firmware (optional, temp-patches Makefile)
 # ──────────────────────────────────────────────────────────────
+
+function find_katapult() {
+  # Find Katapult (formerly CanBoot) flash tool
+  local search_paths=(
+    "$HOME/katapult/scripts/flash_can.py"
+    "$HOME/katapult/scripts/flashtool.py"
+    "$HOME/CanBoot/scripts/flash_can.py"
+    "$HOME/CanBoot/scripts/flashtool.py"
+  )
+  for p in "${search_paths[@]}"; do
+    if [ -f "$p" ]; then
+      echo "$p"
+      return
+    fi
+  done
+  return 1
+}
+
+function query_can_devices() {
+  # Query CAN bus for available devices and display them
+  local query_script="$klipper_dir/scripts/canbus_query.py"
+
+  echo ""
+  echo -e "  ${YELLOW}Querying CAN bus ($can_interface) for devices...${NC}"
+  echo ""
+
+  if [ -f "$query_script" ]; then
+    "$klippy_env/bin/python" "$query_script" "$can_interface" 2>&1 | while IFS= read -r line; do echo "  $line"; done
+  else
+    log_warn "canbus_query.py not found — cannot list CAN devices"
+    echo "  Check your CAN UUIDs in your printer.cfg (canbus_uuid= lines)"
+  fi
+  echo ""
+}
+
+function prompt_can_uuid() {
+  # If --can-uuid was provided, use it
+  if [ -n "$can_uuid" ]; then
+    return
+  fi
+
+  # Show available CAN devices to help the user
+  query_can_devices
+
+  # Prompt interactively
+  echo -e "  ${YELLOW}Enter the CAN UUID of your Eddy probe:${NC}"
+  echo -n "  UUID> "
+  read -r can_uuid
+
+  if [ -z "$can_uuid" ]; then
+    log_error "No CAN UUID entered. Aborting flash."
+    exit 1
+  fi
+
+  # Basic validation: UUID should be 12 hex chars
+  if ! [[ "$can_uuid" =~ ^[0-9a-fA-F]{12}$ ]]; then
+    log_warn "UUID '$can_uuid' doesn't look like a standard 12-char CAN UUID — continuing anyway"
+  fi
+}
 
 function flash_firmware() {
   if [ "$do_flash" = false ]; then
@@ -341,6 +406,19 @@ function flash_firmware() {
 
   log_step "Building & flashing firmware with eddy-ng support"
   cd "$klipper_dir"
+
+  # Find Katapult flash tool
+  local flash_tool
+  flash_tool=$(find_katapult) || {
+    log_error "Katapult not found. Looked in ~/katapult/ and ~/CanBoot/"
+    echo "  Install Katapult: git clone https://github.com/Arksine/katapult.git ~/katapult"
+    exit 1
+  }
+  log_ok "Katapult: $flash_tool"
+
+  # Get CAN UUID (prompt if not provided)
+  prompt_can_uuid
+  log_ok "CAN UUID: $can_uuid (interface: $can_interface)"
 
   local makefile="src/Makefile"
 
@@ -358,11 +436,23 @@ function flash_firmware() {
   echo -e "  ${YELLOW}Running make — this may take a moment...${NC}"
   make 2>&1 | while IFS= read -r line; do echo "  $line"; done
 
-  # Flash firmware
+  # Stop Klipper before flashing via CAN (required to release the CAN device)
   echo ""
-  echo -e "  ${YELLOW}Flashing firmware...${NC}"
-  make flash 2>&1 | while IFS= read -r line; do echo "  $line"; done
-  log_ok "Firmware built and flashed"
+  echo -e "  ${YELLOW}Stopping Klipper for CAN flash...${NC}"
+  sudo systemctl stop klipper 2>/dev/null || sudo service klipper stop 2>/dev/null || true
+  log_ok "Klipper stopped"
+
+  # Flash firmware via Katapult over CAN bus
+  echo ""
+  echo -e "  ${YELLOW}Flashing firmware via CAN ($can_interface → $can_uuid)...${NC}"
+  "$klippy_env/bin/python" "$flash_tool" -i "$can_interface" -u "$can_uuid" -f "$klipper_dir/out/klipper.bin" 2>&1 \
+    | while IFS= read -r line; do echo "  $line"; done
+
+  if [ "${PIPESTATUS[0]}" -eq 0 ]; then
+    log_ok "Firmware flashed successfully"
+  else
+    log_error "Flash may have failed — check output above"
+  fi
 
   # Revert Makefile patch
   git checkout -- "$makefile"
@@ -437,7 +527,13 @@ function main() {
   echo "  Cartographer: $cartographer_dir"
   echo "  CartoEddy:    $cartoeddy_dir"
   if [ "$do_flash" = true ]; then
-    echo "  Firmware:     will rebuild & flash"
+    echo "  Firmware:     will rebuild & flash via CAN"
+    echo "  CAN iface:   $can_interface"
+    if [ -n "$can_uuid" ]; then
+      echo "  CAN UUID:    $can_uuid"
+    else
+      echo "  CAN UUID:    (will be prompted)"
+    fi
   fi
   echo ""
 
@@ -466,7 +562,7 @@ function main() {
   echo ""
   if [ "$do_flash" = false ]; then
     echo "  Tip: If eddy-ng firmware was updated, re-run with --flash:"
-    echo "    $0 --flash --skip-klipper --skip-cartographer --skip-cartoeddy"
+    echo "    $0 --flash --can-uuid <YOUR_EDDY_UUID>"
     echo ""
   fi
 }

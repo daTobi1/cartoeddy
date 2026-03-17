@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from configfile import ConfigWrapper
     from gcode import GCodeDispatch
 
-    from cartographer.adapters.eddy.mcu import EddyMcu
+    from cartoeddy.mcu import EddyMcu
 
 
 class EddyToolhead(KlipperLikeToolhead):

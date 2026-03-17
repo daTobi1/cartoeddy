@@ -23,8 +23,8 @@ logger = logging.getLogger(__name__)
 
 
 def load_config(config: object) -> object:
-    from cartographer.adapters.eddy.adapters import EddyAdapters
-    from cartographer.adapters.eddy.integrator import EddyIntegrator
+    from cartoeddy.adapters import EddyAdapters
+    from cartoeddy.integrator import EddyIntegrator
 
     # Create the LDC1612_ng sensor from eddy-ng
     sensor = _create_sensor(config)

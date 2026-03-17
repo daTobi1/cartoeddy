@@ -4,7 +4,7 @@ Cartographer3D Eddy Probe Integration — Use BTT Eddy (and compatible LDC1612-b
 
 ## How It Works
 
-CartoEddy bridges the [eddy-ng](https://github.com/daTobi1/eddy-ng) sensor driver (`LDC1612_ng`) into Cartographer's adapter architecture. Instead of replacing Cartographer's core logic, it implements Cartographer's `Mcu` protocol for the Eddy sensor. This means all of Cartographer's features work out of the box:
+CartoEddy is a standalone pip package that bridges the [eddy-ng](https://github.com/daTobi1/eddy-ng) sensor driver (`LDC1612_ng`) into Cartographer's adapter architecture. It implements Cartographer's `Mcu` protocol for the Eddy sensor — no files are copied into cartographer's site-packages, making updates safe and clean. All of Cartographer's features work out of the box:
 
 - **Scan mode homing** (frequency-threshold based Z homing)
 - **Touch mode homing** (WMA or Butterworth tap detection)
@@ -27,9 +27,9 @@ cd ~/cartoeddy
 
 The install script:
 1. Installs **cartographer3d-plugin** from PyPI (with numpy dependency)
-2. Clones **eddy-ng** to `~/eddy-ng` (if not already present)
-3. Copies eddy-ng Python files **without patching Klipper** (no dirty repo)
-4. Copies CartoEddy adapter files into the cartographer package
+2. Installs **cartoeddy** as a pip package
+3. Clones **eddy-ng** to `~/eddy-ng` (if not already present)
+4. Copies eddy-ng Python files **without patching Klipper** (no dirty repo)
 5. Creates `cartographer_eddy.py` scaffolding in `klippy/extras/`
 6. Reverts any old eddy-ng patches if present
 
@@ -266,7 +266,7 @@ cd ~/cartoeddy
 ./scripts/update.sh
 ```
 
-This pulls and re-installs all components (Klipper, eddy-ng, Cartographer, CartoEddy) then restarts Klipper.
+This pulls and re-installs all components (Klipper, eddy-ng, Cartographer, CartoEddy via `pip install`) then restarts Klipper.
 
 ```bash
 # Also rebuild & flash firmware:
@@ -285,6 +285,8 @@ This pulls and re-installs all components (Klipper, eddy-ng, Cartographer, Carto
 - All added files are hidden via `.git/info/exclude`
 
 ## Architecture
+
+CartoEddy is installed as a standalone pip package (`cartoeddy`) that depends on `cartographer3d-plugin`. No files are copied into cartographer's site-packages.
 
 ```
 [cartographer_eddy] config section
@@ -359,7 +361,7 @@ cd ~/cartoeddy
 ./scripts/install_eddy.sh --uninstall
 ```
 
-Then remove the `[cartographer_eddy]` sections from your `printer.cfg`.
+This runs `pip uninstall cartoeddy`, removes the scaffolding file, and cleans up any leftover files from older installs. Then remove the `[cartographer_eddy]` sections from your `printer.cfg`.
 
 ## License
 
