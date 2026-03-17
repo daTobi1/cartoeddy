@@ -86,7 +86,7 @@ function get_cartographer_package_dir() {
 import cartographer
 import os
 print(os.path.dirname(cartographer.__file__))
-" 2>/dev/null)
+" 2>/dev/null) || true
   if [ -z "$cartographer_pkg_dir" ] || [ ! -d "$cartographer_pkg_dir" ]; then
     echo "Error: Could not locate cartographer package in '$klippy_env'."
     echo "Make sure cartographer3d-plugin is installed."
